@@ -1,0 +1,215 @@
+
+rm(list = ls())
+
+# Paquetes
+
+library(tidyverse)
+library(patchwork)
+library(ggtext)
+library(glue)
+library(ggrepel)
+
+# descarga via API --------------------------------------------------------
+
+# Descargamos los datos de energía de OurWorldInData
+
+url <- "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.csv"
+
+nameFile <- basename(url)
+
+download.file(url = url, destfile = nameFile, mode = "wb")
+
+
+# levantamos la base ------------------------------------------------------
+
+base <- read.csv("owid-energy-data.csv") %>% 
+  as_tibble() # Este comando nos da una presentación diferente de la base de datos pero en esencia es lo mismo
+
+# Filtrado de la base y selección de variables -----------------------------------------------------
+
+# Como nos interesa haccer una comparación entre Colombia y el resto del mundo,
+# generamos una base en la que filtramos estas dos observaciones y seleccionamos las
+# variables que tienen que ver con electricidad
+
+base2 <- base %>% 
+  filter(country == "Colombia" | country == "World") %>% 
+  select(country, year, iso_code, ends_with("electricity"))
+
+
+# Base en formato largo ---------------------------------------------------
+
+# Dado que vamos a usar 'ggplot()' la forma mas sencilla de armar la base es en
+# formato largo, eso lo logramos con la función 'spread()'
+
+base2 <- base2 %>% 
+  gather(key = tipo,         # argumento con el nombre de la variable que va a contener los nombres de las viejas columnas
+         value = valor,      # argumento con el nombre de la variable que va a contener los valores de las viejas columnas
+         4:length(base2))    # argumento en el que indico que columnas pasar a formato largo, en este caso ni el pais ni el año
+                             # ni el iso_code debido a que ya están en ese formato.
+
+
+# Como queremos armar un gráfico en el que se comparen las fuentes de generación de electricidad
+# generamos un vector para filtrar por esos valores.
+# Adicionalmente vamos a filtrar por valores mayores a 1989, que es de los que tenemos información
+
+source_elec <- c("biofuel_electricity",
+                 "hydro_electricity",
+                 "coal_electricity",
+                 "gas_electricity",
+                 "oil_electricity",
+                 "wind_electricity",
+                 "solar_electricity",
+                 "other_renewable_exc_biofuel_electricity")
+
+base3 <- base2 %>% 
+  filter(tipo %in% source_elec & year > 1989)
+
+# Variables para el manejo de colores -------------------------------------
+
+# Con la base3 ya tenemos la estructura de base necesaria para hacer nuestro gráfico 
+# pero es necesario realizar algunas adecuaciones para tener un manejo de colores informativo
+# creamos una variable categorica en la que se reagrupan las fuentes (fósiles, no fósiles e hidroeléctrica)
+# y generamos textos indicativos en español
+
+base3 <- base3 %>% 
+  mutate(renovable = case_when(
+    tipo == "biofuel_electricity" ~ 1,
+    tipo == "hydro_electricity" ~ 2, 
+    tipo == "solar_electricity" ~ 1, 
+    tipo == "wind_electricity" ~ 1,
+    tipo == "other_renewable_exc_biofuel_electricity" ~ 1,
+    tipo == "coal_electricity" ~ 0,
+    tipo == "gas_electricity" ~ 0,
+    tipo == "oil_electricity" ~ 0),
+    nombre = case_when(
+      tipo == "biofuel_electricity" ~ "Bioenergía",
+      tipo == "hydro_electricity" ~ "Hidroeléct.", 
+      tipo == "solar_electricity" ~ "Solar", 
+      tipo == "wind_electricity" ~ "Eólica", 
+      tipo == "coal_electricity" ~ "Carbón",
+      tipo == "gas_electricity" ~ "Gas",
+      tipo == "oil_electricity" ~ "Oil",
+      tipo == "other_renewable_exc_biofuel_electricity" ~ "Otras Renov."))
+
+
+# La variable con el nombre de las fuentes no tiene un orden predeterminado, lo cual puede ser molesto para la visualización
+# lo mejor es darle un orden en el que se respeten las agrupaciones según la variable renovable
+# eso lo hacemos pasando la variable de character a factor.
+
+base3 <- base3 %>% 
+  mutate(nombre = factor(nombre, levels = c("Carbón", "Oil", "Gas", 
+                                            "Bioenergía", "Solar", "Eólica", "Otras Renov.",
+                                            "Hidroeléct.")),
+         renovable = factor(renovable))
+
+# Ya esta todo listo para empezar a gráficar, 
+
+# En el manejo de colores lo que hacemos es seleccionar el mismo color para la misma categoria de
+# agrupación y dar una tonalidad diferente según el nombre, en este caso especifico, por ejemplo, 
+# la energía renovable (solar, eólica, biomasa o geotermia) es toda verde, pero le damos
+# otra tonalidd o otro nivel de claridad en función de si es solar, eólica ...
+
+# Aca generamos los niveles de tonalidad, deben corresponder al número de valores en cada categoria, por ejemplo
+# si tengo tres renovables, debo generar tres tonalidades de verdes.
+
+alpha_max <- 1
+alpha_min <- 0.6
+alpha_vals <- c(
+  seq(alpha_max, alpha_min, length.out = 3), 
+  seq(alpha_max, alpha_min, length.out = 3),
+  alpha_max)
+
+# el primer gráfico es un grafico de areas para mostrar la evolución de Colombia
+# lo guardamos en el objeto graph1, en cada linea hay algunas aclaraciones
+
+graph1 <- base3 %>% 
+  filter(year > 1999 & nombre != "Otras Renov." & country == "Colombia") %>%  # Filtro para tener los valores que queremos, elimino otras renovables porque no tienen participación en Colombia
+  ggplot(mapping = aes(x = year, 
+                       y = valor, 
+                       fill = renovable, # Atención al relleno (fill), este va a estar en función de las tres grandes categorias (renovable, no renovable e hidroeléctrica)
+                       alpha = nombre    # el alpha da la tonaldad, la cual depende del nombre
+                       )
+         ) + 
+  geom_area(col = "white") +
+  scale_alpha_manual(values = alpha_vals) + # elijo el nivel de claridad según alpha_vals
+  scale_fill_manual(values = c("#000000", "#249206", "#3667A6")) + # Colores en HTML
+  scale_x_continuous(breaks = 2000:2022) + # que salgan todos los años en el eje x
+  scale_y_continuous(n.breaks = 10) +     # Numero de quiebres en el eje Y   
+  labs(title = "A: Evolución de la generación de electricidad por fuente primaria en Colombia",
+       subtitle = "Electricidad medida en Teravatios-Hora (TWh)",
+       x = NULL,
+       y = "Teravatios-Hora",
+       caption = "Fuente: Elaboración propia en base Our World in Data (OWD)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.0, size = 9),
+        plot.subtitle = element_text(hjust = 0.0, size = 8),
+        plot.caption = element_text(size=8, hjust=0.0, face="italic", color="black"),
+        axis.text.x = element_text(size = 6, angle = 45, vjust = 0.5, hjust = 0.5),
+        axis.text.y = element_text(size = 6),
+        axis.title.y = element_text(size = 8),
+        axis.title.x = element_text(size = 7),
+        legend.title = element_text(size=7, hjust = 0.5), 
+        legend.text = element_text(size=6),
+        legend.position = "none")
+
+graph1
+
+
+# Para el grafico de comparación entre colombia y el mundo, necesitamos calcular porcentajes respecto al total
+# agrupando por pais y solo para el 2022, además, creamos las etiquetas que van adentro de los espacios en el gráfico de barras
+
+base4 <- base3 %>% 
+  filter(year == 2022) %>% 
+  ungroup() %>% 
+  group_by(country) %>% 
+  mutate(prop = round(valor/sum(valor)*100,2)) %>% 
+  ungroup() %>% 
+  mutate(etiqueta = paste(nombre, prop, "%"),
+         etiquetas = ifelse(country == "Colombia" & renovable == 1, NA,
+                            ifelse(nombre == "Otras Renov.", NA, etiqueta)))
+
+
+alpha_vals <- c(
+  seq(alpha_max, alpha_min, length.out = 3), 
+  seq(alpha_max, alpha_min, length.out = 4),
+  alpha_max)
+
+
+graph2 <- base4 %>% 
+  filter(country %in% c("Colombia","World")) %>% 
+  ggplot(mapping = aes(x = as.factor(country), y = prop, fill = renovable, alpha = nombre)) +
+  geom_col(col = "white", width = 1) +
+  scale_alpha_manual(values = alpha_vals) +
+  scale_fill_manual(values = c("#000000", "#249206", "#3667A6")) +
+  geom_text(
+    data = base4 %>% filter(country %in% c("Colombia","World")),
+    aes(label = etiquetas),
+    position = position_stack(vjust = 0.70),
+    col = 'white',
+    size = 3,
+    fontface = 'bold'
+  ) +
+  labs(title = "B: Participación porcentual por fuente - 2022",
+       subtitle = "Comparación entre Colombia y el promedio mundial",
+       x = NULL,
+       y = "Porcentaje") +
+  theme_test() +
+  theme(plot.title = element_text(hjust = 0.5, size = 9),
+        plot.subtitle = element_text(hjust = 0.5, size = 8),
+        plot.caption = element_text(size=6, hjust=0.0, face="italic", color="black"),
+        axis.text.x = element_text(size = 9, angle = 0),
+        axis.text.y = element_text(size = 6),
+        axis.title.y = element_text(size = 9),
+        axis.title.x = element_text(size = 7),
+        legend.title = element_text(size=7, hjust = 0.5), 
+        legend.text = element_text(size=6),
+        legend.position = "none")
+
+graph2
+
+grafico <- wrap_plots(graph1, graph2, ncol = 2, widths = c(1, 0.5))
+
+ggsave(plot = grafico, filename = "../rmd/resultados/graficos/30DayChartChallenge/1Day_part_to_whole.png", 
+       units = 'in', width = 9, height = 6)
+
+
